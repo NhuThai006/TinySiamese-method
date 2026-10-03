@@ -61,19 +61,26 @@ from PIL import Image
 from sklearn.metrics import confusion_matrix
 
 # creating the model class
-class Siamese(nn.Module):
+class SiameseSkipAC(nn.Module):
 
     # initializing the model
     def __init__(self):
-        super(Siamese, self).__init__()
+        super(SiameseSkipAC, self).__init__()
         self.dimen = 224
-        self.linear = nn.Sequential(nn.Linear(4096, 2048), nn.ReLU(), nn.Linear(2048, 4096), nn.Sigmoid())
-        self.out = nn.Sequential(nn.Linear(8192, 1),nn.Sigmoid())
+        self.linear = nn.Sequential(
+            nn.Linear(4096, 2048), nn.ReLU(),
+            nn.Linear(2048, 4096), nn.Sigmoid()
+        )
+        self.skip_norm = nn.LayerNorm(4096)      # chuẩn hóa raw diff
+        self.out = nn.Sequential(
+            nn.Linear(12288, 1), nn.Sigmoid()    # 8192 → 12288
+        )
 
     # passing image into the model to get output
-    def forward_one(self, x):
-        x = self.linear(x.float())
-        return x
+    def forward_one(self, x):                    # ← Phương án A
+        residual = x.float()
+        out = self.linear(x.float())
+        return out + residual
 
     # passing image to get model output
     def forward(self, x1, x2):
@@ -81,13 +88,19 @@ class Siamese(nn.Module):
         out2 = self.forward_one(x2)
         out1 = F.normalize(out1, p=2, dim=1)
         out2 = F.normalize(out2, p=2, dim=1)
-        emb=torch.cat((torch.abs(out1 - out2),out1*out2),1)
-        out = self.out(emb)
-        #dis = torch.abs(out1 - out2)
-        #out = self.out(dis)
-        return out
+
+        raw_diff = self.skip_norm(               # ← Phương án C
+            torch.abs(x1.float() - x2.float())
+        )
+
+        emb = torch.cat((
+            torch.abs(out1 - out2),   # encoded diff
+            out1 * out2,              # encoded similarity
+            raw_diff                  # raw diff (skip)
+        ), dim=1)
+        return self.out(emb)
 # instantiating the class
-net = Siamese()
+net = SiameseSkipAC()
 net.load_state_dict(torch.load("model/torch1D_AlexnetPbmltEucHam.model"))
 # function to get unique values
 def unique(list1):
